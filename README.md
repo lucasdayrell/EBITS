@@ -38,3 +38,21 @@ python run_experiment.py --csv path/para/seu.csv --window_len 256 --horizon 20 -
 ## Notas rápidas
 - **PatchTSTConfig** (em `ebits/models_patchtst.py`) controla `patch_len`, `patch_stride`, `d_model`, etc.
 - O wrapper `TorchUpDown` expõe `.predict_proba` no shape `(batch, L, 1)` para encaixar no EBITS.
+
+
+# EBITS v2 (Profiles + PatchTST + Plausibility + Window-Bank)
+
+**Novidades**
+- Perfis prontos: `intraday` e `daily/weekly` via `apply_profile`.
+- Plausibilidade multi-critério (ACF/ACF², skew/kurt, Jarque–Bera, espectro).
+- DTW rápido com `fastdtw` (fallback O(n^2)).
+- PatchTST com balanceamento de classes (+ opcional `--focal`).
+- População inicial realista via *window-bank* de CSVs.
+
+## Instalação
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install fastdtw          # opcional, acelera DTW
+# PatchTST (ajuste seu CUDA/CPU)
+# pip install torch --index-url https://download.pytorch.org/whl/cu121

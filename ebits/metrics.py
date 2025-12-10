@@ -1,9 +1,18 @@
 import numpy as np
+from math import sqrt
+try:
+    from fastdtw import fastdtw
+    _HAS_FASTDTW = True
+except Exception:
+    _HAS_FASTDTW = False
 
 def l2_distance(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.linalg.norm(x - y))
 
-def dtw_distance(x: np.ndarray, y: np.ndarray) -> float:
+def dtw_distance(x: np.ndarray, y: np.ndarray, radius: int = 1) -> float:
+    if _HAS_FASTDTW:
+        d, _ = fastdtw(x, y, radius=radius)
+        return float(sqrt(d))
     n, m = len(x), len(y)
     D = np.full((n+1, m+1), np.inf); D[0,0] = 0.0
     for i in range(1, n+1):
@@ -17,31 +26,55 @@ def acf(x: np.ndarray, max_lag: int=20) -> np.ndarray:
     denom = (x**2).sum() + 1e-12
     return np.array([np.dot(x[:-k], x[k:]) / denom if k>0 else 1.0 for k in range(max_lag+1)])
 
-def plausibility_penalty(r: np.ndarray, r0: np.ndarray, max_lag: int=20) -> float:
-    acf_r, acf_r0 = acf(r, max_lag), acf(r0, max_lag)
-    acf_r2, acf_r20 = acf(r**2, max_lag), acf(r0**2, max_lag)
-    d1 = np.linalg.norm(acf_r - acf_r0)
-    d2 = np.linalg.norm(acf_r2 - acf_r20)
-    return float(d1 + d2)
+def skew_kurt(x: np.ndarray):
+    from scipy.stats import skew, kurtosis
+    return float(skew(x)), float(kurtosis(x, fisher=True))
+
+def jarque_bera(x: np.ndarray):
+    n = len(x)
+    if n < 3: return 0.0
+    s, k = skew_kurt(x)
+    return float(n/6.0 * (s*s + 0.25*(k*k)))
+
+def spectral_energy(x: np.ndarray, nbands: int = 6):
+    xf = np.fft.rfft(x - x.mean())
+    ps = (xf.real**2 + xf.imag**2)
+    ps = ps / (ps.sum() + 1e-12)
+    splits = np.array_split(ps, nbands)
+    return np.array([s.sum() for s in splits])
+
+def plausibility_penalty(r: np.ndarray, r0: np.ndarray, cfg) -> float:
+    acf_r, acf_r0 = acf(r, cfg.acf_max_lag), acf(r0, cfg.acf_max_lag)
+    acf_r2, acf_r20 = acf(r**2, cfg.acf_max_lag), acf(r0**2, cfg.acf_max_lag)
+    d_acf  = np.linalg.norm(acf_r - acf_r0)
+    d_acf2 = np.linalg.norm(acf_r2 - acf_r20)
+    s, k = skew_kurt(r); s0, k0 = skew_kurt(r0)
+    d_sk = abs(s - s0) + abs(k - k0)
+    jb_r, jb_r0 = jarque_bera(r), jarque_bera(r0)
+    d_jb = abs(jb_r - jb_r0)
+    e, e0 = spectral_energy(r), spectral_energy(r0)
+    d_spec = np.linalg.norm(e - e0)
+    pen = (cfg.w_acf  * d_acf +
+           cfg.w_acf2 * d_acf2 +
+           cfg.w_skewkurt * d_sk +
+           cfg.w_jb * d_jb +
+           cfg.w_spectrum * d_spec)
+    return float(pen)
 
 def compute_summary_metrics(model, target_class: int, r0_batch, results):
-    """Agrega flip rate, delta conf, proximidade e plausibilidade médios."""
     flips = 0; n = len(results)
     delta_confs = []; dtws = []; l2s = []; plaus = []
-    for b, res in enumerate(results):
+    for res in results:
         r0 = res["r0"]
         P0 = float(model.predict_proba(r0[None, :, None])[0, target_class])
-        # escolhe candidato com maior prob alvo
         objs = res["objs"]; pop = res["pop"]
         best_idx = int(np.argmin(objs[:,0]))
         r_star = pop[best_idx]
         P1 = float(model.predict_proba(r_star[None, :, None])[0, target_class])
         delta_confs.append(P1 - P0)
-        # flip check
         y0 = int(np.argmax(model.predict_proba(r0[None, :, None])[0]))
         y1 = int(np.argmax(model.predict_proba(r_star[None, :, None])[0]))
         if y0 != y1: flips += 1
-        # proximidade e plausibilidade
         dtws.append(objs[best_idx][1])
         l2s.append(float(np.linalg.norm(r_star - r0)))
         plaus.append(objs[best_idx][2])

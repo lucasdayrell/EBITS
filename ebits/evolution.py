@@ -1,15 +1,19 @@
 import numpy as np
-from typing import List, Tuple, Dict
-from .metrics import dtw_distance, l2_distance, plausibility_penalty
+from typing import List, Tuple, Dict, Optional
+from .metrics import dtw_distance, plausibility_penalty
 
-def evaluate_objectives(r0: np.ndarray, r: np.ndarray, model, cfg) -> Tuple[float,float,float,float]:
-    X = r[None, :, None]
-    p = float(model.predict_proba(X)[0, cfg.target_class])
-    neg_conf = -p
-    prox = dtw_distance(r, r0)
-    plau = plausibility_penalty(r, r0, cfg.acf_max_lag)
-    spars = float(np.abs(r - r0).sum())
-    return neg_conf, prox, plau, spars
+def evaluate_objectives_batch(r0: np.ndarray, pop: np.ndarray, model, cfg):
+    X = pop[:, :, None]
+    P = model.predict_proba(X)
+    neg_conf = -P[:, cfg.target_class]
+    prox = np.zeros(len(pop), dtype=float)
+    plau = np.zeros(len(pop), dtype=float)
+    spars = np.zeros(len(pop), dtype=float)
+    for i in range(len(pop)):
+        prox[i]  = dtw_distance(pop[i], r0, radius=getattr(cfg, 'fastdtw_radius', 1))
+        plau[i]  = plausibility_penalty(pop[i], r0, cfg)
+        spars[i] = np.abs(pop[i] - r0).sum()
+    return np.vstack([neg_conf, prox, plau, spars]).T
 
 def non_dominated_sort(F: List[List[float]]) -> List[List[int]]:
     n = len(F); S = [set() for _ in range(n)]; n_dom = [0]*n; fronts=[[]]
@@ -33,7 +37,6 @@ def non_dominated_sort(F: List[List[float]]) -> List[List[int]]:
 
 def crowding_distance(front_vals: List[List[float]], idxs: List[int]) -> Dict[int,float]:
     m = len(front_vals[0]); cd = {idxs[i]:0.0 for i in range(len(front_vals))}
-    import numpy as np
     for k in range(m):
         vals = np.array([front_vals[i][k] for i in range(len(front_vals))])
         order = np.argsort(vals)
@@ -60,9 +63,8 @@ def nsga2_step(pop: np.ndarray, objs: List[List[float]], cfg) -> Tuple[np.ndarra
             break
     pop = pop[elite_idxs]
 
-    # reprodução
-    offspring = []
     from .operators import crossover_one_point, mutate
+    offspring = []
     while len(offspring) < cfg.population_size:
         i, j = np.random.randint(0, len(pop), size=2)
         a, b = pop[i].copy(), pop[j].copy()
@@ -74,27 +76,26 @@ def nsga2_step(pop: np.ndarray, objs: List[List[float]], cfg) -> Tuple[np.ndarra
     pop_next = np.array(offspring[:cfg.population_size])
     return pop_next, None
 
-def run_ebits(r0_batch: np.ndarray, model, cfg, rng=True):
+def run_ebits(r0_batch: np.ndarray, model, cfg, rng=True, bank: Optional[np.ndarray]=None):
     if rng:
         np.random.seed(cfg.random_seed)
+    from .datasets import initial_population_from_bank
     results = []
     for b in range(len(r0_batch)):
         r0 = r0_batch[b]
-        pop = np.stack([r0 + 0.01*np.random.randn(len(r0)) for _ in range(cfg.population_size)])
-        objs = [evaluate_objectives(r0, ind, model, cfg) for ind in pop]
+        if bank is not None:
+            pop = initial_population_from_bank(r0, bank, pop_size=cfg.population_size, noise_sigma=0.01)
+        else:
+            pop = np.stack([r0 + 0.01*np.random.randn(len(r0)) for _ in range(cfg.population_size)])
+        objs = evaluate_objectives_batch(r0, pop, model, cfg)
         history = []
         for gen in range(cfg.n_generations):
             pop, _ = nsga2_step(pop, objs, cfg)
-            objs = [evaluate_objectives(r0, ind, model, cfg) for ind in pop]
-            best_idx = int(np.argmin([o[0] for o in objs]))
+            objs = evaluate_objectives_batch(r0, pop, model, cfg)
+            best_idx = int(np.argmin(objs[:,0]))
             history.append((gen, pop[best_idx].copy(), objs[best_idx]))
-        fronts = non_dominated_sort(objs)
+        fronts = non_dominated_sort(objs.tolist())
         pareto_idx = fronts[0]
-        results.append({
-            "r0": r0,
-            "pop": pop,
-            "objs": np.array(objs),
-            "pareto_idx": np.array(pareto_idx),
-            "history": history
-        })
+        results.append({"r0": r0, "pop": pop, "objs": np.array(objs),
+                        "pareto_idx": np.array(pareto_idx), "history": history})
     return results
