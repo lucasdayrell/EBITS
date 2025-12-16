@@ -1,6 +1,5 @@
 # EBITS v1 (demo) + PatchTST
-Pipeline mínimo e **rodável** para evoluir janelas de retornos e auditar um classificador up/down.
-Agora com opção **PatchTST** (PyTorch).
+Proposta de framework para evoluir janelas de retornos e auditar um classificador up/down de séries temporais econômicas.
 
 ## Instalação
 ```bash
